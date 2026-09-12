@@ -1,2 +1,2 @@
 # hexspere
-hexagon tessellation projection onto a sphere
+Interactive simulation of 37 tessellating hexagons on a round surface

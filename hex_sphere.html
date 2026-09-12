@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<!--
+  Interactive 37-hexagon spherical cap.
+
+  Self-contained: pure canvas 2D + hand-rolled 3D projection, no CDN, no build step,
+  works offline. Just open the file in a browser.
+
+  Geometry: a perfect flat hex grid (center + N rings) is wrapped onto the unit sphere
+  by an azimuthal projection about the +Z pole -- planar radius maps to polar angle,
+  azimuth is preserved. The projection scale is solved so that one hex step subtends
+  exactly the requested angle at the sphere center. Because the map is a pure function
+  of planar position, hexes sharing a vertex in the plane still share it on the sphere,
+  so the tiling never gaps or overlaps.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hexagons on a spherical cap</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --line: #262c36;
+    --text: #d7dde5;
+    --dim: #8b95a3;
+    --accent: #e0603a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #wrap { display: flex; height: 100%; }
+  #panel { width: 292px; flex: 0 0 292px; background: var(--panel);
+    border-right: 1px solid var(--line); padding: 14px 14px 20px; overflow-y: auto; }
+  #stage { flex: 1; position: relative; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .2px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 18px 0 8px; font-weight: 600;
+    border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+  .sub { color: var(--dim); font-size: 11.5px; margin: 0 0 4px; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .row .val { font-variant-numeric: tabular-nums; color: #fff; font-size: 12px; }
+  input[type=range] { width: 100%; margin: 2px 0 8px; accent-color: var(--accent); }
+  select { width: 100%; background: #0e1116; color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 5px 6px; margin-bottom: 6px; }
+  label.cb { display: flex; align-items: center; gap: 7px; margin: 5px 0; cursor: pointer; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 2.5px 0; vertical-align: top; }
+  td.k { color: var(--dim); }
+  td.v { text-align: right; color: #fff; white-space: nowrap; }
+  #angleTable tr, #polarTable tr { cursor: pointer; }
+  #angleTable tr:hover td, #polarTable tr:hover td { color: var(--accent); }
+  #angleTable tr.sel td, #polarTable tr.sel td { color: var(--accent); }
+  #polarWrap { max-height: 232px; overflow-y: auto; border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 7px; }
+  #polarTable td { font-size: 11.5px; }
+  #selInfo b { color: #fff; font-weight: 600; }
+  #selInfo .big { color: var(--accent); font-size: 15px; font-weight: 600;
+    font-variant-numeric: tabular-nums; }
+  kbd { background: #0e1116; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 0 4px; font: 11px ui-monospace, monospace; color: var(--text); }
+  .keys td { padding: 3px 0; }
+  button { background: #202834; color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 9px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #2a3441; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #hud { position: absolute; left: 12px; top: 10px; font: 11.5px ui-monospace, monospace;
+    color: var(--dim); pointer-events: none; text-shadow: 0 1px 3px #000; }
+  #warn { position: absolute; right: 12px; top: 10px; font-size: 11.5px; color: #d9a13a;
+    pointer-events: none; text-shadow: 0 1px 3px #000; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="panel">
+    <h1>Hexagons on a spherical cap</h1>
+    <p class="sub">Drag to look, scroll to zoom, <kbd>WASD</kbd> to move.
+      Click a hexagon to look down its radius and measure it.</p>
+
+    <h2>Selection</h2>
+    <p class="sub" id="selInfo">Click a hexagon to look straight down its radius and
+      measure its angle to hex 1.</p>
+
+    <h2>Angles from hex 1</h2>
+    <p class="sub">Angle subtended at the sphere center, one row per distinct value.
+      Click a row to jump to that hex.</p>
+    <table id="angleTable"></table>
+
+    <h2>Polar coordinates</h2>
+    <p class="sub">About hex 1, with the hex 1 &rarr; hex 2 line as 0&deg;.
+      <b>r</b> = polar angle from hex 1, <b>&theta;</b> = azimuth.</p>
+    <div id="polarWrap">
+      <table id="polarTable"></table>
+    </div>
+
+    <h2>Geometry</h2>
+    <div class="row"><span>Angle per hex step</span><span class="val" id="vAngle"></span></div>
+    <input type="range" id="sAngle" min="3" max="40" step="0.1" value="16.5">
+    <div class="row"><span>Rings around center</span><span class="val" id="vRings"></span></div>
+    <input type="range" id="sRings" min="0" max="7" step="1" value="3">
+    <div class="row"><span>Gap between tiles</span><span class="val" id="vGap"></span></div>
+    <input type="range" id="sGap" min="0" max="25" step="1" value="0">
+    <div class="sub" style="margin-top:6px">Wrapping projection</div>
+    <select id="proj">
+      <option value="stereographic" selected>Stereographic — best hex shapes (conformal)</option>
+      <option value="equidistant">Azimuthal equidistant — most equal sizes</option>
+      <option value="lambert">Lambert equal-area — equal areas</option>
+      <option value="gnomonic">Gnomonic — flat-facet / dome-like</option>
+    </select>
+
+    <h2>Display</h2>
+    <select id="sphereMode">
+      <option value="solid" selected>Solid sphere</option>
+      <option value="ghost">Ghost sphere</option>
+      <option value="none">Tiles only</option>
+    </select>
+    <label class="cb"><input type="checkbox" id="cGrid" checked> Lat/long graticule</label>
+    <label class="cb"><input type="checkbox" id="cAngle" checked> Angle wedge for the selected hex</label>
+    <label class="cb"><input type="checkbox" id="cPair"> Neighbour angles on the seams</label>
+    <label class="cb"><input type="checkbox" id="cRef" checked> Polar 0&deg; line and azimuth arc</label>
+    <label class="cb"><input type="checkbox" id="cBack"> Draw hidden far-side tiles</label>
+    <label class="cb"><input type="checkbox" id="cSpin"> Auto-spin</label>
+    <div class="sub" style="margin-top:8px">Tile labels</div>
+    <select id="labels">
+      <option value="index" selected>Number — spirals out from the center</option>
+      <option value="ring">Ring number</option>
+      <option value="axial">Axial coords q,r</option>
+      <option value="none">None</option>
+    </select>
+    <p class="sub" id="numNote"></p>
+
+    <h2>Camera</h2>
+    <div style="display:flex; gap:6px; margin-bottom:8px">
+      <button id="bOrbit" class="on">Orbit</button>
+      <button id="bFly">Free fly</button>
+      <button id="bReset">Reset</button>
+    </div>
+    <table class="keys">
+      <tr><td><kbd>drag</kbd></td><td class="v" id="hDrag">orbit</td></tr>
+      <tr><td><kbd>wheel</kbd></td><td class="v" id="hWheel">zoom</td></tr>
+      <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td class="v" id="hWasd">orbit / zoom</td></tr>
+      <tr><td><kbd>R</kbd><kbd>F</kbd></td><td class="v" id="hRF">up / down</td></tr>
+      <tr><td><kbd>shift</kbd></td><td class="v">move faster</td></tr>
+      <tr><td><kbd>1</kbd>..<kbd>4</kbd></td><td class="v">preset views</td></tr>
+      <tr><td><kbd>space</kbd></td><td class="v">auto-spin</td></tr>
+      <tr><td><kbd>click</kbd></td><td class="v">select a hexagon</td></tr>
+      <tr><td><kbd>esc</kbd></td><td class="v">clear selection</td></tr>
+    </table>
+
+    <h2>Measured</h2>
+    <table id="stats"></table>
+  </div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="hud"></div>
+    <div id="warn"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- vector helpers
+const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const add = (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const mul = (a, s) => [a[0]*s, a[1]*s, a[2]*s];
+const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const len = a => Math.hypot(a[0], a[1], a[2]);
+const norm = a => { const l = len(a) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const DEG = Math.PI / 180;
+const angleAtCenter = (a, b) =>
+  Math.acos(clamp(dot(a, b) / (len(a) * len(b)), -1, 1)) / DEG;
+
+// ---------------------------------------------------------------- projections
+// Each maps planar radius rho (already scaled) -> polar angle theta from the pole.
+// `inv` gives the rho that produces polar angle A, used to solve the scale so that
+// one hex step of planar length d subtends exactly the requested angle.
+const PROJ = {
+  equidistant:   { theta: r => r,                  inv: A => A },
+  stereographic: { theta: r => 2*Math.atan(r/2),   inv: A => 2*Math.tan(A/2) },
+  lambert:       { theta: r => 2*Math.asin(clamp(r/2, -1, 1)), inv: A => 2*Math.sin(A/2) },
+  gnomonic:      { theta: r => Math.atan(r),       inv: A => Math.tan(A) },
+};
+
+// ---------------------------------------------------------------- hex grid
+const D = 1;                      // planar center-to-center spacing
+const CIRCUM = D / Math.sqrt(3);   // planar circumradius of a pointy-top hex
+const EDGE_SUBDIV = 6;             // samples per hex edge, so edges follow the surface
+const AX_DIRS = [[1,0],[0,1],[-1,1],[-1,0],[0,-1],[1,-1]];
+const RING_COLORS = ["#e8b44a","#4c88c4","#5fa8a0","#8c6fbf","#c96a8f","#7f9c4a","#b98b4e","#5b7fd4"];
+const ACCENT = "#ff6b4a";
+
+function axialCells(nRings) {
+  const out = [[0, 0, 0]];
+  for (let k = 1; k <= nRings; k++) {
+    let q = AX_DIRS[4][0]*k, r = AX_DIRS[4][1]*k;
+    for (let side = 0; side < 6; side++) {
+      for (let i = 0; i < k; i++) {
+        out.push([q, r, k]);
+        q += AX_DIRS[side][0];
+        r += AX_DIRS[side][1];
+      }
+    }
+  }
+  return out;
+}
+
+const axialToPlane = (q, r) => [D*(q + r/2), D*(Math.sqrt(3)/2)*r];
+
+function hexCorners(cx, cy, shrink) {
+  const a = CIRCUM * shrink, out = [];
+  for (let i = 0; i < 6; i++) {
+    const t = i * 60 * DEG;
+    out.push([cx + a*Math.sin(t), cy + a*Math.cos(t)]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- build the tiling
+// Everything lives on the unit sphere, so lengths on screen are in sphere radii and
+// every reported angle is directly the angle subtended at the sphere center.
+let tiles = [], stats = {}, angleGroups = [], pairs = [], selected = null;
+let refAz = 0, capRad = 0;   // azimuth of the polar 0 deg line, and the cap half-angle
+
+function build() {
+  const A = P.angle * DEG;
+  const proj = PROJ[P.proj];
+  const k = proj.inv(A) / D;                 // planar scale that realises the angle
+  const toSphere = ([x, y]) => {
+    const rho = k * Math.hypot(x, y);
+    const th = proj.theta(rho), ph = Math.atan2(y, x), s = Math.sin(th);
+    return [s*Math.cos(ph), s*Math.sin(ph), Math.cos(th)];
+  };
+
+  const cells = axialCells(P.rings);
+  const shrink = 1 - P.gap / 100;
+  const byKey = new Map();
+  // `index` is 1-based in build order: center first, then each ring walked in turn,
+  // so the numbering spirals outward (ring 1 = 2..7, ring 2 = 8..19, ring 3 = 20..37).
+  tiles = cells.map(([q, r, ring], i) => {
+    const c = axialToPlane(q, r);
+    const corners = hexCorners(c[0], c[1], shrink).map(toSphere);
+    // subdivided outline so the tile hugs the curvature instead of cutting across it
+    const outline = [];
+    const full = hexCorners(c[0], c[1], shrink);
+    for (let j = 0; j < 6; j++) {
+      const p0 = full[j], p1 = full[(j+1) % 6];
+      for (let s = 0; s < EDGE_SUBDIV; s++) {
+        const t = s / EDGE_SUBDIV;
+        outline.push(toSphere([p0[0] + t*(p1[0]-p0[0]), p0[1] + t*(p1[1]-p0[1])]));
+      }
+    }
+    const tile = { index: i + 1, q, r, ring, center: toSphere(c), corners, outline,
+                   color: RING_COLORS[ring % RING_COLORS.length] };
+    byKey.set(q + "," + r, tile);
+    return tile;
+  });
+
+  // ---- measurements, recomputed live so the panel never lies about the geometry
+  const pole = [0, 0, 1];
+  const ring1 = AX_DIRS.map(([dq, dr]) => byKey.get(dq + "," + dr)).filter(Boolean);
+  const centerAngles = ring1.map(t => angleAtCenter(tiles[0].center, t.center));
+
+  // adjacent pairs, once each, with the angle they subtend and the shared-edge midpoint
+  const adj = [];
+  pairs = [];
+  for (const t of tiles) {
+    for (const [dq, dr] of AX_DIRS) {
+      const n = byKey.get((t.q+dq) + "," + (t.r+dr));
+      if (n && (t.q < n.q || (t.q === n.q && t.r < n.r))) {
+        const ang = angleAtCenter(t.center, n.center);
+        adj.push(ang);
+        pairs.push({ a: t, b: n, angle: ang, mid: norm(add(t.center, n.center)) });
+      }
+    }
+  }
+
+  const edges = [], areas = [];
+  let capHalf = 0;
+  for (const t of tiles) {
+    for (let i = 0; i < 6; i++) edges.push(angleAtCenter(t.corners[i], t.corners[(i+1) % 6]));
+    const c = mul(t.corners.reduce(add, [0,0,0]), 1/6);
+    let a = 0;
+    for (let i = 0; i < 6; i++) {
+      a += 0.5 * len(cross(sub(t.corners[i], c), sub(t.corners[(i+1) % 6], c)));
+    }
+    areas.push(a);
+    for (const p of t.outline) capHalf = Math.max(capHalf, angleAtCenter(pole, p));
+  }
+  const rng = arr => [Math.min(...arr), Math.max(...arr)];
+  const [eLo, eHi] = rng(edges), [aLo, aHi] = rng(areas), [dLo, dHi] = rng(adj.length ? adj : [0]);
+
+  stats = {
+    "hexagons": tiles.length,
+    "ring sizes": Array.from({length: P.rings + 1},
+      (_, i) => tiles.filter(t => t.ring === i).length).join(" + "),
+    "center &rarr; ring 1": centerAngles.length
+      ? (Math.min(...centerAngles).toFixed(3) === Math.max(...centerAngles).toFixed(3)
+          ? Math.min(...centerAngles).toFixed(3) + "&deg; (all 6)"
+          : Math.min(...centerAngles).toFixed(3) + "&ndash;" + Math.max(...centerAngles).toFixed(3) + "&deg;")
+      : "&mdash;",
+    "all neighbours": adj.length ? dLo.toFixed(3) + "&ndash;" + dHi.toFixed(3) + "&deg;" : "&mdash;",
+    "hex edge": eLo.toFixed(3) + "&ndash;" + eHi.toFixed(3) + "&deg;",
+    "edge spread": ((eHi/eLo - 1) * 100).toFixed(1) + "%",
+    "area spread": ((aHi/aLo - 1) * 100).toFixed(1) + "%",
+    "cap half-angle": capHalf.toFixed(3) + "&deg;",
+    "sphere R / hex step": (1 / (k * D)).toFixed(4),
+  };
+
+  // ---- polar coordinates of every tile about hex 1.
+  // rho = polar angle from hex 1, theta = azimuth measured from the hex 1 -> hex 2 line,
+  // increasing in the direction hex 2 -> 3 -> 4 ... around ring 1. Azimuth is untouched by
+  // the wrapping, so theta is identical for every projection; only rho changes.
+  refAz = tiles.length > 1 ? Math.atan2(tiles[1].center[1], tiles[1].center[0]) : 0;
+  capRad = capHalf * DEG;
+  for (const t of tiles) {
+    t.rho = angleAtCenter(tiles[0].center, t.center);
+    if (t.ring === 0) { t.theta = null; continue; }   // the pole has no azimuth
+    let th = (Math.atan2(t.center[1], t.center[0]) - refAz) / DEG;
+    th = ((th % 360) + 360) % 360;
+    if (th > 360 - 1e-6) th = 0;                      // kill -0 rounding to 360.000
+    t.theta = th;
+  }
+
+  document.getElementById("polarTable").innerHTML = tiles.map(t =>
+    `<tr data-index="${t.index}"><td class="k">${t.index}</td>` +
+    `<td class="v">${t.rho.toFixed(3)}&deg;</td>` +
+    `<td class="v">${t.theta === null ? "&mdash;" : t.theta.toFixed(3) + "&deg;"}</td></tr>`
+  ).join("");
+
+  // ---- distinct angles from hex 1: group every other tile by the angle its center
+  // subtends with tile 1 at the sphere center, then keep one representative per value.
+  const groups = [];
+  for (const t of tiles.slice(1)) {
+    const a = angleAtCenter(tiles[0].center, t.center);
+    let g = groups.find(x => Math.abs(x.angle - a) < 1e-7);
+    if (!g) { g = { angle: a, members: [] }; groups.push(g); }
+    g.members.push(t);
+  }
+  groups.sort((x, y) => x.angle - y.angle);
+
+  // lowest-numbered member is the representative, so the list is stable across rebuilds
+  for (const g of groups) {
+    g.rep = g.members.reduce((a, b) => (a.index <= b.index ? a : b));
+    for (const t of g.members) t.group = g;
+  }
+  angleGroups = groups;
+
+  document.getElementById("angleTable").innerHTML = groups.map(g =>
+    `<tr data-index="${g.rep.index}"><td class="k">1:${g.rep.index}</td>` +
+    `<td class="v">${g.angle.toFixed(3)}&deg;</td>` +
+    `<td class="k" style="text-align:right">&times;${g.members.length}</td></tr>`).join("");
+  refreshSelection();
+
+  let html = "";
+  for (const key in stats) html += `<tr><td class="k">${key}</td><td class="v">${stats[key]}</td></tr>`;
+  document.getElementById("stats").innerHTML = html;
+
+  // spell out which numbers belong to which ring, e.g. "1 · 2-7 · 8-19 · 20-37"
+  const spans = [];
+  let n = 1;
+  for (let r = 0; r <= P.rings; r++) {
+    const count = r === 0 ? 1 : 6 * r;
+    spans.push(count === 1 ? String(n) : `${n}&ndash;${n + count - 1}`);
+    n += count;
+  }
+  document.getElementById("numNote").innerHTML = "by ring: " + spans.join(" &middot; ");
+}
+
+// ---------------------------------------------------------------- selection
+// A tile stays selected across rebuilds by its number, so dragging the angle or ring
+// sliders keeps measuring the same hex.
+function refreshSelection() {
+  if (selected) selected = tiles.find(t => t.index === selected.index) || null;
+  const info = el("selInfo");
+  document.querySelectorAll("#angleTable tr").forEach(tr => tr.classList.toggle(
+    "sel", !!(selected && selected.group && +tr.dataset.index === selected.group.rep.index)));
+  document.querySelectorAll("#polarTable tr").forEach(tr => tr.classList.toggle(
+    "sel", !!(selected && +tr.dataset.index === selected.index)));
+  if (!selected) {
+    info.innerHTML = "Click a hexagon to look straight down its radius and measure it.";
+    return;
+  }
+  const a = angleAtCenter(tiles[0].center, selected.center);
+  info.innerHTML =
+    `hex <b>${selected.index}</b> &middot; ring ${selected.ring} ` +
+    `&middot; q,r = ${selected.q},${selected.r}<br>` +
+    `1:${selected.index} = <span class="big">${a.toFixed(3)}&deg;</span><br>` +
+    `polar: r = <b>${selected.rho.toFixed(3)}&deg;</b>, &theta; = ` +
+    `<b>${selected.theta === null ? "&mdash;" : selected.theta.toFixed(3) + "&deg;"}</b><br>` +
+    (selected.group
+      ? `<span style="color:var(--dim)">${selected.group.members.length} hexes share this angle</span>`
+      : `<span style="color:var(--dim)">this is hex 1</span>`);
+}
+
+function selectTile(t) {
+  selected = t;
+  refreshSelection();
+  animateTo(viewFor(t));
+}
+
+// ---------------------------------------------------------------- parameters + UI
+const P = { angle: 16.5, rings: 3, gap: 0, proj: "stereographic",
+            sphere: "solid", grid: true, showAngle: true, back: false,
+            labels: "index", pairs: false, polarRef: true, spin: false };
+
+const el = id => document.getElementById(id);
+
+function bindRange(id, key, fmt) {
+  const s = el(id), out = el("v" + id.slice(1));
+  const apply = () => {
+    P[key] = parseFloat(s.value);
+    out.innerHTML = fmt(P[key]);
+    build();
+  };
+  s.addEventListener("input", apply);
+  apply();
+}
+bindRange("sAngle", "angle", v => v.toFixed(3) + "&deg;");
+bindRange("sRings", "rings", v => v + " (" + (1 + 3*v*(v+1)) + " hexes)");
+bindRange("sGap",   "gap",   v => v + "%");
+
+el("proj").addEventListener("change", e => { P.proj = e.target.value; build(); });
+el("sphereMode").addEventListener("change", e => { P.sphere = e.target.value; });
+el("labels").addEventListener("change", e => { P.labels = e.target.value; });
+for (const id of ["angleTable", "polarTable"]) {
+  el(id).addEventListener("click", e => {
+    const tr = e.target.closest("tr");
+    if (!tr) return;
+    const t = tiles.find(x => x.index === +tr.dataset.index);
+    if (t) selectTile(t);
+  });
+}
+for (const [id, key] of [["cGrid","grid"], ["cAngle","showAngle"], ["cBack","back"],
+                         ["cPair","pairs"], ["cRef","polarRef"], ["cSpin","spin"]]) {
+  el(id).addEventListener("change", e => { P[key] = e.target.checked; });
+}
+
+// ---------------------------------------------------------------- camera
+// Orbit mode derives the eye from target + yaw/pitch/dist. Free-fly moves the eye
+// directly and only uses yaw/pitch for the look direction. World +Z is the pole.
+// `pitch` is the elevation of the *look* direction, so looking down at the +Z pole
+// means a negative pitch and, in orbit mode, an eye above the cap.
+const cam = { yaw: -0.9, pitch: -0.55, roll: 0, dist: 3.4, target: [0, 0, 0],
+              eye: [0, 0, 0], fov: 50, mode: "orbit" };
+
+// Roll-free right/up for a view direction. Falls back to a different reference axis when
+// looking straight along the pole, where cross(fwd, Z) collapses.
+function baseFrame(fwd) {
+  let right = cross(fwd, [0, 0, 1]);
+  if (len(right) < 1e-8) right = cross(fwd, [1, 0, 0]);
+  right = norm(right);
+  return { right, up: cross(right, fwd) };
+}
+
+function camBasis() {
+  const fwd = [Math.cos(cam.pitch)*Math.cos(cam.yaw),
+               Math.cos(cam.pitch)*Math.sin(cam.yaw),
+               Math.sin(cam.pitch)];
+  let { right, up } = baseFrame(fwd);
+  if (cam.roll) {
+    // Rodrigues about fwd; roll lets a selected hex be pinned to the top of the screen.
+    const c = Math.cos(cam.roll), s = Math.sin(cam.roll);
+    const rot = v => add(mul(v, c), mul(cross(fwd, v), s));
+    right = rot(right);
+    up = rot(up);
+  }
+  return { fwd, right, up };
+}
+
+const wrapPi = a => Math.atan2(Math.sin(a), Math.cos(a));
+
+// ---- smooth fly-to, used when a hex is selected
+let anim = null;
+
+function animateTo(target, dur = 0.7) {
+  anim = {
+    t: 0, dur,
+    from: { yaw: cam.yaw, pitch: cam.pitch, roll: cam.roll, dist: cam.dist },
+    d: { yaw: wrapPi(target.yaw - cam.yaw), pitch: target.pitch - cam.pitch,
+         roll: wrapPi(target.roll - cam.roll), dist: target.dist - cam.dist },
+  };
+  cam.mode = "orbit";
+  cam.target = [0, 0, 0];
+  setModeButtons();
+}
+
+// Where to put the camera to inspect a tile: look straight down the tile's own radius,
+// so the line from the tile to the sphere center is perpendicular to the screen and the
+// tile sits dead center, face-on. Roll is then chosen so hex 1 appears straight above it.
+function viewFor(t) {
+  const b = norm(t.center), a = norm(tiles[0].center);
+  const fwd = mul(b, -1);                      // eye ends up out along +b
+  const yaw = Math.atan2(fwd[1], fwd[0]);
+  const pitch = Math.asin(clamp(fwd[2], -1, 1));
+  const f2 = [Math.cos(pitch)*Math.cos(yaw), Math.cos(pitch)*Math.sin(yaw), Math.sin(pitch)];
+  const { right: right0, up: up0 } = baseFrame(f2);
+  // Component of hex 1's direction perpendicular to the view axis -> screen up.
+  // While hex 1 sits at the pole this always comes out as roll 0, because the pole, the
+  // tile's radius and the world Z axis are coplanar, so the roll-free frame already puts
+  // hex 1 straight up. That is what keeps horizontal dragging a clean spin about the pole
+  // axis: yaw leaves the pole's position on screen untouched.
+  let want = sub(a, mul(b, dot(a, b)));
+  let roll = 0;
+  if (len(want) > 1e-9) {
+    want = norm(want);
+    roll = Math.atan2(dot(want, right0), dot(want, up0));
+  }
+  return { yaw, pitch, roll, dist: clamp(cam.dist, 2.6, 4.5) };
+}
+
+function syncEye() {
+  const { fwd } = camBasis();
+  if (cam.mode === "orbit") cam.eye = sub(cam.target, mul(fwd, cam.dist));
+}
+
+function resetCam(preset) {
+  const presets = {
+    1: { yaw: -0.9,  pitch: -0.55, dist: 3.4 },  // three-quarter from above
+    2: { yaw: -1.57, pitch: -0.06, dist: 3.6 },  // edge-on, shows the center angle
+    3: { yaw: -1.57, pitch: -1.5,  dist: 3.0 },  // straight down the pole
+    4: { yaw: -0.9,  pitch: -0.55, dist: 1.55 }, // low over the tiles
+  };
+  Object.assign(cam, presets[preset] || presets[1]);
+  cam.mode = "orbit";
+  cam.roll = 0;
+  cam.target = [0, 0, 0];
+  anim = null;
+  setModeButtons();
+  syncEye();
+}
+
+function setModeButtons() {
+  el("bOrbit").classList.toggle("on", cam.mode === "orbit");
+  el("bFly").classList.toggle("on", cam.mode === "fly");
+  const fly = cam.mode === "fly";
+  el("hDrag").textContent  = fly ? "look around" : "orbit";
+  el("hWheel").textContent = fly ? "fly forward / back" : "zoom";
+  el("hWasd").textContent  = fly ? "strafe / forward" : "orbit / zoom";
+  el("hRF").textContent    = fly ? "rise / sink" : "swing over / under";
+}
+
+el("bOrbit").onclick = () => { cam.mode = "orbit"; cam.target = [0,0,0]; setModeButtons(); syncEye(); };
+el("bFly").onclick   = () => { cam.mode = "fly"; syncEye(); setModeButtons(); };
+el("bReset").onclick = () => resetCam(1);
+
+// ---------------------------------------------------------------- input
+const cv = el("cv");
+let drag = null;
+
+let moved = 0;
+
+cv.addEventListener("pointerdown", e => {
+  drag = { x: e.clientX, y: e.clientY };
+  moved = 0;
+  cv.setPointerCapture(e.pointerId);
+  cv.classList.add("dragging");
+});
+cv.addEventListener("pointerup", e => {
+  drag = null;
+  cv.releasePointerCapture(e.pointerId);
+  cv.classList.remove("dragging");
+  if (moved < 5) {                            // a click, not a drag: pick a hexagon
+    const rect = cv.getBoundingClientRect();
+    const t = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (t) selectTile(t);
+    else { selected = null; refreshSelection(); }
+  }
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  moved += Math.abs(dx) + Math.abs(dy);
+  anim = null;                                // manual control cancels a fly-to
+  drag = { x: e.clientX, y: e.clientY };
+  // Screen-right is -Y at yaw 0, so both looking right (fly) and swinging the model
+  // right (orbit) decrease yaw. Dragging down looks down / lifts the camera.
+  const s = cam.mode === "fly" ? 0.0045 : 0.0055;
+  cam.yaw -= dx * s;
+  cam.pitch = clamp(cam.pitch - dy * s, -1.5705, 1.5705);
+  syncEye();
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const f = Math.exp(e.deltaY * 0.0012);
+  if (cam.mode === "orbit") { cam.dist = clamp(cam.dist * f, 1.02, 24); syncEye(); }
+  else { cam.eye = add(cam.eye, mul(camBasis().fwd, -(f - 1) * 6)); }
+}, { passive: false });
+
+// Hit test against the polygons the last frame actually drew, nearest first.
+let lastDrawable = [];
+
+function pointInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function hitTest(sx, sy) {
+  let best = null;
+  for (const d of lastDrawable) {
+    if (d.facing <= 0) continue;
+    if (!pointInPoly(sx, sy, d.poly)) continue;
+    if (!best || d.depth < best.depth) best = d;
+  }
+  return best ? best.t : null;
+}
+
+const held = new Set();
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const k = e.key.toLowerCase();
+  if (k === " ") { P.spin = !P.spin; el("cSpin").checked = P.spin; e.preventDefault(); return; }
+  if (k === "escape") { selected = null; refreshSelection(); return; }
+  if ("1234".includes(k)) { resetCam(+k); return; }
+  if (k === "m") { (cam.mode === "fly" ? el("bOrbit") : el("bFly")).click(); return; }
+  held.add(k);
+});
+addEventListener("keyup", e => held.delete(e.key.toLowerCase()));
+addEventListener("blur", () => held.clear());
+
+function step(dt) {
+  if (anim) {
+    anim.t = Math.min(1, anim.t + dt / anim.dur);
+    const e = anim.t * anim.t * (3 - 2 * anim.t);      // smoothstep
+    cam.yaw   = anim.from.yaw   + anim.d.yaw   * e;
+    cam.pitch = anim.from.pitch + anim.d.pitch * e;
+    cam.roll  = anim.from.roll  + anim.d.roll  * e;
+    cam.dist  = anim.from.dist  + anim.d.dist  * e;
+    syncEye();
+    if (anim.t >= 1) anim = null;
+  }
+  if (P.spin) { anim = null; cam.yaw += dt * 0.35; syncEye(); }
+  if (!held.size) return;
+  anim = null;
+  const boost = (held.has("shift") ? 3 : 1);
+  if (cam.mode === "orbit") {
+    const r = dt * 1.5 * boost;
+    if (held.has("a") || held.has("arrowleft"))  cam.yaw -= r;
+    if (held.has("d") || held.has("arrowright")) cam.yaw += r;
+    if (held.has("w") || held.has("arrowup"))    cam.dist = clamp(cam.dist * (1 - dt*1.4*boost), 1.02, 24);
+    if (held.has("s") || held.has("arrowdown"))  cam.dist = clamp(cam.dist * (1 + dt*1.4*boost), 1.02, 24);
+    if (held.has("r")) cam.pitch = clamp(cam.pitch - r, -1.5705, 1.5705);  // rise
+    if (held.has("f")) cam.pitch = clamp(cam.pitch + r, -1.5705, 1.5705);  // sink
+    syncEye();
+  } else {
+    const { fwd, right, up } = camBasis();
+    // speed scales with height above the surface so close-up flying stays controllable
+    const v = dt * boost * clamp(len(cam.eye) - 0.9, 0.12, 6) * 1.6;
+    let m = [0, 0, 0];
+    if (held.has("w") || held.has("arrowup"))    m = add(m, mul(fwd, v));
+    if (held.has("s") || held.has("arrowdown"))  m = sub(m, mul(fwd, v));
+    if (held.has("d") || held.has("arrowright")) m = add(m, mul(right, v));
+    if (held.has("a") || held.has("arrowleft"))  m = sub(m, mul(right, v));
+    if (held.has("r")) m = add(m, mul(up, v));
+    if (held.has("f")) m = sub(m, mul(up, v));
+    cam.eye = add(cam.eye, m);
+  }
+}
+
+// ---------------------------------------------------------------- renderer
+const ctx = cv.getContext("2d");
+let W = 0, H = 0, dpr = 1, focal = 1;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize);
+
+const NEAR = 0.008;
+
+function makeProjector() {
+  const { fwd, right, up } = camBasis();
+  focal = 0.5 * H / Math.tan(cam.fov * DEG / 2);
+  return p => {
+    const v = sub(p, cam.eye);
+    const z = dot(v, fwd);
+    if (z < NEAR) return null;             // behind the eye
+    return [W/2 + focal * dot(v, right)/z, H/2 - focal * dot(v, up)/z, z];
+  };
+}
+
+function projectAll(pts, pr) {
+  const out = [];
+  for (const p of pts) { const q = pr(p); if (!q) return null; out.push(q); }
+  return out;
+}
+
+function shade(hex, t) {
+  // simple Lambert term so the curvature of the cap is readable
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.round(r*t)},${Math.round(g*t)},${Math.round(b*t)})`;
+}
+
+const LIGHT = norm([0.45, -0.7, 0.9]);
+
+function drawSphere(pr) {
+  if (P.sphere === "none") return;
+  const d = len(cam.eye);
+  if (d <= 1.0001) return;                 // eye is inside the sphere
+  // exact silhouette: the circle where the view cone touches the unit sphere
+  const n = norm(cam.eye), rs = Math.sqrt(1 - 1/(d*d)), cc = mul(n, 1/d);
+  let a = cross(n, [0,0,1]);
+  if (len(a) < 1e-6) a = cross(n, [1,0,0]);
+  a = norm(a);
+  const b2 = cross(n, a);
+  const pts = [];
+  for (let i = 0; i < 128; i++) {
+    const t = i / 128 * Math.PI * 2;
+    const q = pr(add(cc, add(mul(a, rs*Math.cos(t)), mul(b2, rs*Math.sin(t)))));
+    if (!q) return;
+    pts.push(q);
+  }
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (const q of pts) ctx.lineTo(q[0], q[1]);
+  ctx.closePath();
+  if (P.sphere === "solid") {
+    // fake the terminator with a gradient offset toward the light
+    let cx = 0, cy = 0;
+    for (const q of pts) { cx += q[0]/pts.length; cy += q[1]/pts.length; }
+    let rad = 0;
+    for (const q of pts) rad = Math.max(rad, Math.hypot(q[0]-cx, q[1]-cy));
+    const g = ctx.createRadialGradient(cx - rad*0.3, cy - rad*0.35, rad*0.05, cx, cy, rad*1.05);
+    g.addColorStop(0, "#39414d");
+    g.addColorStop(0.6, "#242b34");
+    g.addColorStop(1, "#12161c");
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+  ctx.strokeStyle = P.sphere === "solid" ? "#4b5462" : "#39414d";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// Stroke a path that lies on the sphere, breaking it wherever it goes round the back.
+function strokeSurfacePath(pts, pr) {
+  ctx.beginPath();
+  let pen = false;
+  for (const p of pts) {
+    // hide the far side unless we are looking through a ghost sphere
+    const front = P.sphere === "solid" ? dot(norm(p), norm(sub(cam.eye, p))) > 0 : true;
+    const q = front ? pr(p) : null;
+    if (!q) { pen = false; continue; }
+    if (pen) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); pen = true; }
+  }
+  ctx.stroke();
+}
+
+// Point on (just above) the sphere at polar angle rho and azimuth az, both radians.
+function surfacePoint(rho, az, r = 1.004) {
+  const s = Math.sin(rho);
+  return [r * s * Math.cos(az), r * s * Math.sin(az), r * Math.cos(rho)];
+}
+
+function drawGraticule(pr) {
+  if (!P.grid) return;
+  ctx.strokeStyle = "rgba(255,255,255,0.085)";
+  ctx.lineWidth = 1;
+  const emit = pts => strokeSurfacePath(pts, pr);
+  for (let m = 0; m < 12; m++) {                 // meridians
+    const ph = m / 12 * Math.PI * 2, pts = [];
+    for (let i = 0; i <= 120; i++) {
+      const th = i / 120 * Math.PI;
+      pts.push([Math.sin(th)*Math.cos(ph), Math.sin(th)*Math.sin(ph), Math.cos(th)]);
+    }
+    emit(pts);
+  }
+  for (let k = 1; k < 12; k++) {                 // parallels
+    const th = k / 12 * Math.PI, s = Math.sin(th), z = Math.cos(th), pts = [];
+    for (let i = 0; i <= 160; i++) {
+      const ph = i / 160 * Math.PI * 2;
+      pts.push([s*Math.cos(ph), s*Math.sin(ph), z]);
+    }
+    emit(pts);
+  }
+}
+
+function drawTiles(pr) {
+  const { fwd } = camBasis();
+  const drawable = [];
+  for (const t of tiles) {
+    const facing = dot(norm(t.center), norm(sub(cam.eye, t.center)));
+    if (facing <= 0 && !P.back) continue;        // far side of the sphere
+    const poly = projectAll(t.outline, pr);
+    if (!poly) continue;
+    drawable.push({ t, poly, depth: dot(sub(t.center, cam.eye), fwd), facing });
+  }
+  drawable.sort((a, b) => b.depth - a.depth);    // painter's algorithm, far first
+  lastDrawable = drawable;                       // reused for click picking
+
+  for (const { t, poly, facing } of drawable) {
+    const lam = clamp(dot(norm(t.center), LIGHT), 0, 1);
+    const tone = 0.42 + 0.58 * lam;
+    ctx.beginPath();
+    ctx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i][0], poly[i][1]);
+    ctx.closePath();
+    ctx.globalAlpha = facing > 0 ? 1 : 0.22;
+    ctx.fillStyle = shade(t.color, tone);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(10,13,17,0.9)";
+    ctx.lineWidth = 1.1;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  drawLabels(drawable, pr);
+  drawPairAngles(pr);
+  return drawable.length;
+}
+
+// Angle between neighbouring hexagons, to one decimal, printed on the seam they share.
+// Unlike the center-to-ring-1 step this is not constant: it shrinks toward the rim.
+function drawPairAngles(pr) {
+  if (!P.pairs) return;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  for (const p of pairs) {
+    // Drop strongly oblique seams: near the rim they foreshorten into each other and the
+    // numbers collide. Zooming in brings them back.
+    const facing = dot(p.mid, norm(sub(cam.eye, p.mid)));
+    if (facing <= 0.28) continue;
+    const q = pr(mul(p.mid, 1.002));
+    if (!q) continue;
+    const px = clamp(focal * 0.030 / q[2], 0, 13);
+    if (px < 7) continue;                      // would be unreadable, skip
+    const txt = p.angle.toFixed(1);
+    ctx.font = `600 ${px.toFixed(1)}px ui-monospace, monospace`;
+    ctx.globalAlpha = clamp((facing - 0.28) * 5, 0, 1);
+    ctx.strokeStyle = "rgba(8,11,15,0.9)";
+    ctx.lineWidth = Math.max(1.6, px * 0.28);
+    ctx.strokeText(txt, q[0], q[1]);
+    ctx.fillStyle = "#cfe3ff";
+    ctx.fillText(txt, q[0], q[1]);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Polar coordinates deliberately do not appear here: r is drawn once, on the wedge for the
+// selected hex, and theta is sidebar-only.
+function labelFor(t) {
+  if (P.labels === "index") return String(t.index);
+  if (P.labels === "ring")  return String(t.ring);
+  if (P.labels === "axial") return t.q + "," + t.r;
+  return null;
+}
+
+// Second pass, after every tile is filled, so a nearer neighbour can never paint over
+// a number. Text is sized from the tile's own on-screen radius, so it shrinks with
+// distance and with the tiles when you crank up the ring count.
+function drawLabels(drawable, pr) {
+  if (P.labels === "none") return;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  for (const { t, poly, facing } of drawable) {
+    if (facing <= 0.12) continue;              // too edge-on to read
+    const txt = labelFor(t);
+    if (!txt) continue;
+    const q = pr(mul(t.center, 1.001));
+    if (!q) continue;
+    let rad = 0;                               // on-screen radius of this tile
+    for (const p of poly) rad = Math.max(rad, Math.hypot(p[0]-q[0], p[1]-q[1]));
+    const px = rad * (P.labels === "axial" ? 0.5 : 0.72) / Math.max(txt.length, 1.6);
+    if (px < 5) continue;                      // unreadably small, skip it
+    ctx.font = `600 ${px.toFixed(1)}px ui-monospace, monospace`;
+    ctx.globalAlpha = clamp((facing - 0.12) * 6, 0, 1);
+    ctx.lineWidth = Math.max(1.5, px * 0.16);
+    ctx.strokeStyle = "rgba(8,11,15,0.85)";    // halo, so it reads on any tile colour
+    ctx.strokeText(txt, q[0], q[1]);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(txt, q[0], q[1]);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Outline of the selected tile plus, if enabled, the wedge from hex 1 to it: two radii
+// out of the sphere center, the arc between them, and the angle to three decimals.
+function drawSelection(pr) {
+  if (!selected) return;
+  const hit = lastDrawable.find(d => d.t === selected);
+  if (hit) {
+    ctx.beginPath();
+    ctx.moveTo(hit.poly[0][0], hit.poly[0][1]);
+    for (let i = 1; i < hit.poly.length; i++) ctx.lineTo(hit.poly[i][0], hit.poly[i][1]);
+    ctx.closePath();
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+  }
+  if (!P.showAngle) return;
+
+  const a = tiles[0].center, b = selected.center;
+  const deg = angleAtCenter(a, b);
+  const O = [0, 0, 0];
+  const qo = pr(O);
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 1.6;
+  for (const p of [a, b]) {
+    const q1 = pr(p);
+    if (!qo || !q1) continue;
+    ctx.beginPath();
+    ctx.moveTo(qo[0], qo[1]);
+    ctx.lineTo(q1[0], q1[1]);
+    ctx.stroke();
+  }
+  if (qo) {
+    ctx.fillStyle = ACCENT;
+    ctx.beginPath();
+    ctx.arc(qo[0], qo[1], 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (deg < 1e-6) return;                    // hex 1 selected: nothing to subtend
+
+  // arc between the two radii, at 45% of the sphere radius
+  const arc = [];
+  for (let i = 0; i <= 60; i++) {
+    const t = i / 60;
+    arc.push(mul(norm(add(mul(a, 1 - t), mul(b, t))), 0.45));
+  }
+  const pts = projectAll(arc, pr);
+  if (!pts) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (const q of pts) ctx.lineTo(q[0], q[1]);
+  ctx.stroke();
+
+  // r goes on the angle it actually measures. Looking straight down the tile's own radius
+  // the wedge is edge-on, so offset the text sideways off the arc, not radially.
+  const mid = pts[30];
+  let off = [1, 0];
+  if (qo) {
+    const d = norm2([mid[0] - qo[0], mid[1] - qo[1]]);
+    off = [-d[1], d[0]];                       // perpendicular to the wedge
+    if (off[0] < 0) off = [-off[0], -off[1]];   // keep the label on the right-hand side
+  }
+  const txt = `${deg.toFixed(3)}°`;
+  const lx = mid[0] + off[0] * 34, ly = mid[1] + off[1] * 34;
+  ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(8,11,15,0.92)";
+  ctx.lineWidth = 4.5;
+  ctx.strokeText(txt, lx, ly);
+  ctx.fillStyle = ACCENT;
+  ctx.fillText(txt, lx, ly);
+}
+
+const norm2 = v => {
+  const l = Math.hypot(v[0], v[1]) || 1;
+  return [v[0] / l, v[1] / l];
+};
+
+// The polar frame on the surface: the 0 deg reference meridian through hex 2, plus the
+// azimuth sweep for the selected tile along its own small circle. Labels carry the bare
+// number -- no "theta" glyph.
+function drawPolar(pr) {
+  if (!P.polarRef) return;
+  const edge = capRad + 0.06;
+  const ref = [];
+  for (let i = 0; i <= 60; i++) ref.push(surfacePoint(edge * i / 60, refAz));
+  ctx.strokeStyle = "rgba(150,190,255,0.75)";
+  ctx.lineWidth = 1.4;
+  strokeSurfacePath(ref, pr);
+  const tip = pr(surfacePoint(edge, refAz));
+  if (tip) {
+    ctx.font = "600 12px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(8,11,15,0.9)";
+    ctx.lineWidth = 3.5;
+    ctx.strokeText("0°", tip[0], tip[1]);
+    ctx.fillStyle = "#9dc0ff";
+    ctx.fillText("0°", tip[0], tip[1]);
+  }
+
+  if (!selected || selected.theta === null) return;
+  const rho = selected.rho * DEG, sweep = selected.theta * DEG;
+  const arc = [];
+  for (let i = 0; i <= 80; i++) arc.push(surfacePoint(rho, refAz + sweep * i / 80));
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 1.8;
+  strokeSurfacePath(arc, pr);
+  // nudge the label slightly outward from the arc so it lands on a seam, not on a number
+  const mid = pr(surfacePoint(rho * 1.1, refAz + sweep / 2, 1.06));
+  if (mid) {
+    const txt = `${selected.theta.toFixed(3)}°`;
+    ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(8,11,15,0.92)";
+    ctx.lineWidth = 4;
+    ctx.strokeText(txt, mid[0], mid[1]);
+    ctx.fillStyle = ACCENT;
+    ctx.fillText(txt, mid[0], mid[1]);
+  }
+}
+
+
+let last = performance.now(), fps = 0;
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  fps = fps * 0.9 + (1/Math.max(dt, 1e-3)) * 0.1;
+  step(dt);
+
+  if (cv.width !== Math.round(cv.clientWidth * dpr)) resize();
+  ctx.clearRect(0, 0, W, H);
+  const pr = makeProjector();
+
+  const inside = len(cam.eye) < 1;
+  // looking from inside a solid sphere shows nothing useful, so draw it ghosted
+  const savedSphere = P.sphere;
+  if (inside && P.sphere === "solid") P.sphere = "ghost";
+
+  drawSphere(pr);
+  drawGraticule(pr);
+  const n = drawTiles(pr);
+  drawPolar(pr);
+  drawSelection(pr);
+  P.sphere = savedSphere;
+
+  const alt = len(cam.eye) - 1;
+  el("hud").textContent =
+    `${cam.mode}  |  altitude ${alt >= 0 ? alt.toFixed(2) : "inside"} R  |  ` +
+    `${n}/${tiles.length} tiles drawn  |  ${fps.toFixed(0)} fps`;
+  el("warn").textContent = inside ? "camera is inside the sphere — press 1 to reset" : "";
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+build();
+setModeButtons();
+syncEye();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
